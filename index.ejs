@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <title>Chessboard</title>
+    <style>
+        .chessboard {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            grid-template-rows: repeat(8, 1fr);
+            width: 400px;
+            height: 400px;
+            position: relative;
+            transition: transform 0.5s ease;
+        }
+
+        .piece.white {
+            color: white;
+            filter: drop-shadow(0 0 2px rgba(0, 0, 0, 1));
+        }
+
+        .piece.black {
+            color: black;
+        }
+
+        .square {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background-color 0.3s ease;
+        }
+
+        .square.light {
+            background-color: #f0d9b5;
+        }
+
+        .square.dark {
+            background-color: #b58863;
+        }
+
+        .piece {
+            font-size: 36px;
+            cursor: pointer;
+            transition: transform 0.3s ease;
+        }
+
+        .dragging {
+            opacity: 0.5;
+        }
+
+        /* Highlight valid move squares */
+        .highlight {
+            background-color: rgba(255, 255, 0, 0.5);
+        }
+
+        /* Rotate for black player */
+        .rotate-board {
+            transform: rotate(180deg);
+        }
+
+        /* Rotate the pieces inside for black player */
+        .rotate-board .piece {
+            transform: rotate(180deg);
+        }
+    </style>
+</head>
+<body class="bg-zinc-900">
+    <div class="w-full h-screen flex items-center justify-center">
+        <div class="chessboard"></div>
+    </div>
+    <h1 class="text-white text-center">Chess Game Made by @AK</h1>
+    
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+    
+    <script>
+        const socket = io();
+        const chess = new Chess();
+        const boardElement = document.querySelector(".chessboard");
+
+        let draggedPiece = null;
+        let srcSquare = null;
+        let playerRole = null;
+
+        const renderBoard = () => {
+            const board = chess.board();
+            boardElement.innerHTML = ""; // Clear the board before rendering
+
+            board.forEach((row, i) => {
+                row.forEach((square, j) => {
+                    const squareElement = document.createElement("div");
+                    squareElement.dataset.row = i;
+                    squareElement.dataset.col = j;
+                    squareElement.classList.add("square", (i + j) % 2 === 0 ? "light" : "dark");
+
+                    // Render pieces
+                    if (square) {
+                        const pieceElement = document.createElement("div");
+                        pieceElement.classList.add("piece", square.color === 'w' ? "white" : "black");
+                        pieceElement.innerHTML = getPieceUnicode(square.type, square.color);
+                        
+                        if (playerRole === square.color) {
+                            pieceElement.setAttribute("draggable", true);
+                        }
+
+                        // Drag start event
+                        pieceElement.addEventListener("dragstart", (e) => {
+                            if (pieceElement.getAttribute("draggable")) {
+                                draggedPiece = pieceElement;
+                                srcSquare = { row: i, col: j };
+                                e.dataTransfer.setData("text/plain", ""); // Required for drag-and-drop
+                                pieceElement.classList.add("dragging");
+                                highlightValidMoves(srcSquare); // Highlight valid moves
+                            }
+                        });
+
+                        // Drag end event
+                        pieceElement.addEventListener("dragend", () => {
+                            draggedPiece.classList.remove("dragging");
+                            draggedPiece = null;
+                            srcSquare = null;
+                            clearHighlights(); // Clear highlights after drop
+                        });
+
+                        squareElement.appendChild(pieceElement); // Add piece to square
+                    }
+
+                    // Allow drop event
+                    squareElement.addEventListener("dragover", (e) => {
+                        e.preventDefault(); // Allow dropping
+                    });
+
+                    // Drop event
+                    squareElement.addEventListener("drop", (e) => {
+                        e.preventDefault();
+                        if (draggedPiece) {
+                            const targetSquare = {
+                                row: parseInt(squareElement.dataset.row),
+                                col: parseInt(squareElement.dataset.col),
+                            };
+                            handleMove(srcSquare, targetSquare); // Handle the move
+                        }
+                    });
+
+                    boardElement.appendChild(squareElement); // Add square to the board
+                });
+            });
+
+            // Flip the board if player is black
+            if (playerRole === "b") {
+                boardElement.classList.add("rotate-board");
+            } else {
+                boardElement.classList.remove("rotate-board");
+            }
+        };
+
+        const handleMove = (srcSquare, targetSquare) => {
+            const move = {
+                from: getSquareNotation(srcSquare), // Convert to chess notation
+                to: getSquareNotation(targetSquare),
+                promotion: 'q' // Default promotion to queen
+            };
+
+            const validMove = chess.move(move);
+            if (validMove) {
+                socket.emit("move", move); // Emit move to server
+                renderBoard(); // Re-render the board after the move
+            } else {
+                console.log("Invalid move:", move);
+            }
+        };
+
+        const getPieceUnicode = (type, color) => {
+            const pieceMap = {
+                p: "♙", r: "♖", n: "♘", b: "♗", q: "♕", k: "♔", // white pieces
+                P: "♟", R: "♜", N: "♞", B: "♝", Q: "♛", K: "♚"  // black pieces
+            };
+            return color === "w" ? pieceMap[type.toLowerCase()] : pieceMap[type.toUpperCase()];
+        };
+
+        const getSquareNotation = ({ row, col }) => {
+            const files = ["a", "b", "c", "d", "e", "f", "g", "h"];
+            const ranks = ["8", "7", "6", "5", "4", "3", "2", "1"];
+            return files[col] + ranks[row];
+        };
+
+        // Highlight valid moves for the selected piece
+        const highlightValidMoves = (srcSquare) => {
+            const possibleMoves = chess.moves({ square: getSquareNotation(srcSquare), verbose: true });
+            possibleMoves.forEach(move => {
+                const row = 8 - parseInt(move.to[1]);
+                const col = move.to.charCodeAt(0) - 97; // Convert 'a' to 0, 'b' to 1, etc.
+                const targetSquare = document.querySelector(`[data-row='${row}'][data-col='${col}']`);
+                targetSquare.classList.add("highlight");
+            });
+        };
+
+        // Clear all highlighted squares
+        const clearHighlights = () => {
+            document.querySelectorAll(".highlight").forEach(square => {
+                square.classList.remove("highlight");
+            });
+        };
+
+        socket.on("playerRole", function(role) {
+            playerRole = role;
+            renderBoard();
+        });
+
+        socket.on("spectatorRole", function() {
+            playerRole = null;
+            renderBoard();
+        });
+
+        socket.on("boardState", function(fen) {
+            chess.load(fen);
+            renderBoard();
+        });
+
+        document.addEventListener("DOMContentLoaded", () => {
+            renderBoard(); // Call renderBoard to display the board
+        });
+    </script>
+</body>  
+</html>
